@@ -5,11 +5,13 @@ services:
     ports:
       - "80:80"
       - "443:443"
-      - "2019:2019"   # Caddy admin API for zero-downtime reloads
+      - "2019:2019"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       - api
       - frontend
@@ -18,22 +20,45 @@ services:
   api:
     build: ./api
     ports:
-      - "8080:8080"
+      - "8081:8080"
     environment:
       - PORT=8080
       - DOCKER_HOST=unix:///var/run/docker.sock
       - BUILDKIT_HOST=tcp://buildkit:1234
       - RAILPACK_CACHE_DIR=/cache/railpack
       - CADDY_ADMIN_URL=http://caddy:2019
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_USER=payroute
+      - DB_PASSWORD=payroute_secret
+      - DB_NAME=payroute
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - railpack_cache:/cache/railpack
       - ./sample-app:/workspace/sample-app:ro
+      - ./payroute-app:/workspace/payroute-app:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
       - buildkit
+      - db
     restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: payroute
+      POSTGRES_PASSWORD: payroute_secret
+      POSTGRES_DB: payroute
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U payroute"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
   buildkit:
     image: moby/buildkit:latest
@@ -43,9 +68,12 @@ services:
 
   frontend:
     build: ./frontend
+    ports:
+      - "5173:5173" 
     restart: unless-stopped
 
 volumes:
   caddy_data:
   caddy_config:
   railpack_cache:
+  postgres_data:

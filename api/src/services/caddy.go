@@ -28,7 +28,10 @@ const appUpstreamTemplate = `
     handle /api/* {
         reverse_proxy api:8080
     }
-    handle /app/* {
+    handle_path /app/* {
+        reverse_proxy host.docker.internal:{{.Port}}
+    }
+    handle /static/* {
         reverse_proxy host.docker.internal:{{.Port}}
     }
     handle {

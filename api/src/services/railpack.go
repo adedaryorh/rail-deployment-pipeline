@@ -35,6 +35,7 @@ func (s *RailpackService) Build(ctx context.Context, srcDir, imageTag string) (i
 	)
 	cmd.Env = append(os.Environ(),
 		"RAILPACK_CACHE_DIR="+s.cacheDir,
+		"REACT_APP_API_URL=/app/api",
 	)
 
 	pr, pw := io.Pipe()

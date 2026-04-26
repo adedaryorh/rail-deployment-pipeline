@@ -1,0 +1,72 @@
+
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+*.secret
+
+
+backend/vendor/
+backend/bin/
+backend/payroute
+backend/*.exe
+backend/*.test
+backend/*.out
+backend/tmp/
+
+
+*.coverprofile
+coverage.out
+coverage.html
+
+
+backend/tmp/
+
+
+
+frontend/coverage/
+
+
+frontend/dist/
+
+
+postgres-data/
+pgdata/
+*.dump
+*.sql.bak
+
+
+.vscode/
+.idea/
+*~
+.DS_Store
+Thumbs.db
+*.iml
+
+
+
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Desktop.ini
+
+# ============================================================
+# Logs
+# ============================================================
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ============================================================
+# Misc
+# ============================================================
+*.tmp
+*.bak
+*.orig
+.cache/

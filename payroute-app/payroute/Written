@@ -1,0 +1,153 @@
+4a.
+
+Issue 1:
+
+Signature is checked only for presence but is never verified
+
+The code only checks whether the signature header exists but does not actually verify it cryptographically, Meaning that any non-empty value will pass the check, which is extremely dangerous in a payment system.
+
+If an attacker knows the webhook endpoint URL, they could send forged payloads and potentially manipulate payment states, credit arbitrary accounts, or trigger incorrect reversals.
+
+The proper fix is to verify the signature using HMAC-SHA256 with your secret key and perform a constant-time comparison with the signature header. Also, it is important to read the raw request body before JSON parsing because body parsers may reformat whitespace and break signature validation. In my implementation, I first read the raw bytes from the request body, verify the HMAC, and only then proceed to JSON unmarshalling.
+
+
+Issue 2:
+
+Returning 404 when a transaction is not found
+
+When the webhook provider sends a reference that does not exist in the database, the system returns a 404 response. Most payment providers interpret any non-2xx response as a delivery failure and will retry the webhook multiple times.
+
+This can lead to retry storms, excessive logging, and unnecessary load on the system.
+
+The safer approach is to always return 200 OK for webhook requests, even if the transaction is not found. Instead, such events should be logged and stored for investigation. An unknown reference does not necessarily indicate an error — it may simply be a timing issue where the webhook arrived before the transaction record was created.
+
+
+Issue 3:
+
+Lack of idempotency — duplicate webhooks may cause double crediting
+
+Payment providers often deliver webhooks using at-least-once delivery semantics. This means the same webhook may be sent multiple times due to network retries or provider-side behaviour.
+
+Without idempotency protection, the system may process the same webhook repeatedly, updating transaction records and crediting accounts multiple times.
+
+To prevent this, webhook processing should check whether the transaction is already in a terminal state, such as completed or failed, and exit early if so. Once a transaction reaches a terminal state, it should not be processed again.
+
+
+Issue 4:
+
+Database operations are not wrapped in a transaction
+
+The status update and balance credit operations are executed as separate database queries without transactional safety.
+
+If the system crashes, loses database connectivity, or is terminated between operations, data inconsistency may occur — for example, a transaction marked as completed but without the corresponding balance update.
+
+Both operations should be executed inside a database transaction block to ensure atomicity and consistency.
+
+
+Issue 5:
+
+Response is unreachable due to incorrect placement
+
+The line res.status(200).send('OK') is placed outside the route handler function, making it unreachable dead code and likely causing runtime or syntax errors.
+
+As a result, the webhook handler may never send a success response, causing the payment provider to interpret the webhook as failed and retry the request continuously.
+
+
+Issue 6:
+
+Using untrusted payload amount for crediting accounts
+
+The code uses payload.amount directly when crediting accounts. Since webhook payloads originate from external systems, they should never be treated as the source of truth.
+
+The correct approach is to rely on the transaction amount stored in the database when the payment was initiated.
+
+Using provider-supplied amounts introduces the risk of provider bugs or malicious manipulation. In my implementation, I always credit using the stored transaction destination amount.
+
+
+Issue 7:
+
+None storage of raw webhook payload for audit purposes
+
+The system processes webhook requests without storing the original payload.
+
+In payment systems, retaining the raw webhook data is important for auditing, debugging, and dispute resolution. The raw payload and headers should be stored before any processing occurs to allow event replay and forensic analysis if needed.
+
+
+Honestly Issue 5 (the unreachable res.status(200)) would have caught my eye immediately in a code review — it means every webhook delivery fails silently and the provider retries forever. Easy to miss when writing but catastrophic in production.
+
+4B:
+
+Failure Scenarios
+
+1. Double-spend: Two concurrent POST /payments with different idempotency keys, same account, insufficient balance for both
+My OWN implementation handles this with SELECT ... FOR UPDATE on the sender's account row inside a DB transaction. In payment_service.go:
+
+db.Clauses(clause.Locking{Strength: "UPDATE"}).First(&senderAccount, "id = ?", input.SenderAccountID)
+
+When two requests hit simultaneously, PostgreSQL serialises them at the row lock. The first acquires the lock, checks balance (₦5M ≥ ₦4M ✓), debits, commits, and releases.
+The second then acquires the lock, reads the now-debited balance (₦1M), checks (₦1M < ₦4M ✗), and returns `insufficient funds`. The `SELECT FOR UPDATE` is essential — a plain `SELECT` would let both reads see ₦5M before either write commits, and both would pass the check.
+
+
+2. Webhook arrives before API response: provider sends callback before the transaction row exists**
+
+My `ProcessWebhook` function does `db.Where("provider_reference = ?", providerRef).First(&tx)`. If no row is found, it logs the unknown reference, marks the webhook_event as processed, and returns `200 OK` — it does not error. The webhook is stored in `webhook_events` with `processed = true`.
+
+This is a real gap in my current implementation that I'd flag honestly: I don't retry processing the stored event later. The proper fix is to set `processed = false` for unknown references and run a background worker (a goroutine with a ticker, or a separate job queue) that periodically queries `webhook_events WHERE processed = false` and re-attempts processing. With a short delay (e.g. retry after 5s, 30s, 5min), the transaction will almost certainly exist by the first retry.
+
+This one I actually had to think about. My first instinct was to return an error, but that's wrong — the provider will just retry. The gap in my current code is that I mark the event as processed=true and move on, but I should be setting processed=false and retrying later with a background worker.
+
+
+3. FX rate stale: user gets a quote, waits 10 minutes, then confirms**
+
+My `FxQuote` model stores `expires_at = time.Now().Add(5 * time.Minute)`. In `CreatePayment`, after generating the quote I call `quote.IsExpired()`. If it has expired the request is rejected with an error prompting retry. However, in my current implementation the quote is generated fresh *within* the payment creation call itself, so the expiry check is essentially on a just-generated quote and would only catch an extreme edge case. The more complete implementation for a UI with a "confirm" step would be: the frontend calls `GET /fx/quote` first (which creates and returns a quote with an ID), the user sees it for up to 5 minutes, then `POST /payments` includes the `fx_quote_id`, and the backend validates `quote.ExpiresAt > time.Now()` before proceeding. If expired: reject with `quote_expired`, frontend fetches fresh quote, user sees new rate and re-confirms. This protects the user and the platform from adverse rate movement — a 3% move on a ₦50M payment is ₦1.5M of exposure.
+
+4. Partial settlement: provider says completed, recipient bank rejects 2 days later**
+
+My current ledger handles initiation and settlement, but not post-settlement chargebacks. The correct approach for this scenario is a new transaction record with `status = "reversed"` and a corresponding set of ledger entries that are the mirror image of the settlement entries:
+
+Chargeback Transaction (new record):
+  Recipient USD Account    -$333.33   (debit — claws back)
+  Platform USD Holding     +$333.33   (credit)
+
+Then either:
+  Platform NGN Holding     -₦500,000  (debit)
+  Sender NGN Account       +₦500,000  (credit — full refund)
+
+I never modify the original transaction's ledger entries — that violates the audit trail. Every correction is a new forward entry. The double-entry constraint means the books always balance even through reversals. I would add a POST /payments/:id/reverse endpoint that creates this reversal transaction and its ledger entries atomically, and a chargeback_reason field on the transaction for compliance records.
+
+
+5. Provider timeout:
+
+30-second HTTP call times out, unknown if they received it
+
+
+In submitToStripe in my payment_service.go, if Stripe returns an error (including timeout), I fall back to a pending-{reference} placeholder as the provider_reference and log the failure rather than aborting the transaction. The transaction is written to the DB in processing status. This is the right shape but incomplete for production.
+The correct full implementation: Stripe's PaymentIntent creation is idempotent when you pass params.IdempotencyKey = stripe.String(tx.Reference) — which I do. This means if you retry the exact same call, Stripe will return the same PaymentIntent rather than creating a duplicate. So the right approach is: on timeout, store the transaction as processing with no provider_reference, then have a background reconciliation job that queries transactions WHERE status = 'processing' AND provider_reference LIKE 'pending-%' AND created_at < NOW() - INTERVAL '2 minutes', retries the Stripe submission (idempotently), and updates the provider_reference. Stripe's idempotency key ensures the retry either retrieves the original intent or creates a new one cleanly.
+
+
+
+
+
+
+4C: Production Readiness
+
+If I'm being honest, THE (transactional outbox) is the one that would keep me up at night. Everything else is security or ops hygiene — important but recoverable. A stuck transaction with locked funds and no retry is a customer support nightmare at 2am."
+
+5 Critical Changes
+
+
+1. Authentication and per-business API keys
+Currently any caller can submit payments from any account by guessing or enumerating a UUID.
+In production cenario, every API request must carry a credential (API key or JWT) that is resolved to a business_id, and every operation must verify the sender account belongs to that business. A compromised client cannot move another business's money. Implementation: API key table with business_id FK, hashed key storage (bcrypt or SHA-256), middleware that extracts the business from the key and injects it into the request context, then every DB query filters by AND business_id = ?. This prevents the most basic fraud vector — one customer accessing another's funds.
+
+2. Transactional outbox for Stripe submission
+Currently, if the process crashes after writing the transaction to the DB but before the Stripe call completes, the transaction is stuck in processing with no provider_reference and no retry mechanism. In real money movement, a stuck transaction is a real liability — the customer's funds are locked in the platform holding account indefinitely. Implementation: write a payment_jobs table row in the same DB transaction as the ledger entries. A separate goroutine (or dedicated worker process) polls this table, calls Stripe idempotently, updates the provider_reference, and marks the job complete. This is the transactional outbox pattern — the job record and the ledger entries are committed atomically, so you never have a funded transaction with no submission in flight. This prevents money being held hostage by process crashes or deployment restarts.
+
+3. Structured logging, distributed tracing, and alerting on financial anomalies
+log.Printf produces unstructured text that is impossible to query at scale. In production you need every payment event (created, submitted, settled, reversed) emitted as structured JSON with transaction_id, business_id, amount, currency, status, duration_ms. Beyond logging: instrument a ledger balance assertion that runs after every settled transaction and compares the sum of all ledger entries per account against the accounts.balance column — any discrepancy is a critical alert that pages on-call immediately. Implementation: use zerolog or zap for structured logs, OpenTelemetry for traces across the Stripe call and DB operations, and a nightly reconciliation job that asserts SUM(ledger_entries WHERE entry_type=credit) - SUM(ledger_entries WHERE entry_type=debit) = accounts.balance for every account. This catches ledger bugs before they compound.
+
+4. Rate limiting and idempotency key expiry
+The current system has no rate limiting — a single client can flood POST /payments and either exhaust Stripe API quotas or overwhelm the DB with lock contention. Idempotency keys are also stored forever, which means the table grows unboundedly and old keys can collide with new legitimate keys if clients recycle them. Implementation: Redis-backed rate limiting (e.g. 10 payment attempts per business per minute using a sliding window), enforced in Gin middleware before the handler runs. Idempotency keys should expire after 24 hours (per Stripe's own standard) with a created_at index and a nightly cleanup job. Rate limiting prevents both accidental runaway clients and deliberate abuse; key expiry prevents the idempotency table from becoming a memory/storage liability.
+
+5. Secrets management and environment hardening
+Currently STRIPE_SECRET_KEY and WEBHOOK_SECRET live in a .env file and are passed as plain environment variables. In production, plain env vars appear in process listings, get logged by orchestrators, and are included in crash dumps. Implementation: integrate with a secrets manager (AWS Secrets Manager, HashiCorp Vault, or GCP Secret Manager). The application fetches secrets at startup over mTLS, secrets are rotated on a schedule without redeployment, and access is audited. Separately: the DB should use a least-privilege role that only has SELECT/INSERT/UPDATE on the tables it needs — no DROP, no CREATE, no access to other schemas. This limits blast radius if the application is compromised. A leaked Stripe live key in a .env file committed to git is one of the most common and most expensive incidents in fintech.

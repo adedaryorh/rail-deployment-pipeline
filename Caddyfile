@@ -7,8 +7,12 @@
     handle /api/* {
         reverse_proxy api:8080
     }
-
-    # Frontend (Vite dev server)
+    handle /static/* {
+        reverse_proxy host.docker.internal:8082
+    }
+    handle_path /app/* {
+        reverse_proxy host.docker.internal:8082
+    }
     handle {
         reverse_proxy frontend:5173
     }

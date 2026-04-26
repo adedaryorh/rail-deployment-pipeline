@@ -11,11 +11,16 @@ import (
 )
 
 const (
-	appSrcDir       = "/workspace/sample-app"
-	appHostPort     = 3000
-	appInternalPort = 3000
-	healthURL       = "http://host.docker.internal:3000/health"
-	healthTimeout   = 60 * time.Second
+	appSrcDir       = "/workspace/payroute-app/payroute/backend"
+	appHostPort     = 8082
+	appInternalPort = 8080
+	healthURL       = "http://host.docker.internal:8082/health"
+
+	//appSrcDir       = "/workspace/sample-app"
+	//appHostPort     = 3000
+	//appInternalPort = 3000
+	//healthURL       = "http://host.docker.internal:3000/health"
+	healthTimeout = 60 * time.Second
 )
 
 type DeployController struct {
@@ -40,8 +45,8 @@ func (dc *DeployController) Run(ctx context.Context) *repo.Deploy {
 func (dc *DeployController) execute(deployID string) {
 	ctx := context.Background()
 
-	imageTag := fmt.Sprintf("sample-app:%s", deployID[:8])
-	containerName := fmt.Sprintf("sample-app-%s", deployID[:8])
+	imageTag := fmt.Sprintf("payroute-app:%s", deployID[:8])
+	containerName := fmt.Sprintf("payroute-app-%s", deployID[:8])
 
 	dc.repo.UpdateMeta(deployID, imageTag, containerName, appHostPort)
 	dc.log(deployID, fmt.Sprintf("==> Starting deploy %s", deployID))
@@ -79,6 +84,10 @@ func (dc *DeployController) execute(deployID string) {
 			dc.log(deployID, fmt.Sprintf("warn: stop previous: %v", err))
 		}
 	}
+
+	// Double check for ANY container on port 8082 and remove it
+	dc.log(deployID, "==> Ensuring port 8082 is free…")
+	_ = dc.dockerSvc.CleanupPort(ctx, appHostPort)
 
 	dc.log(deployID, fmt.Sprintf("==> Starting container %s on port %d…", containerName, appHostPort))
 	cid, err := dc.dockerSvc.Run(ctx, imageTag, containerName, appHostPort, appInternalPort)
