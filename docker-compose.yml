@@ -1,0 +1,51 @@
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+      - "2019:2019"   # Caddy admin API for zero-downtime reloads
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+      - frontend
+    restart: unless-stopped
+
+  api:
+    build: ./api
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+      - DOCKER_HOST=unix:///var/run/docker.sock
+      - BUILDKIT_HOST=tcp://buildkit:1234
+      - RAILPACK_CACHE_DIR=/cache/railpack
+      - CADDY_ADMIN_URL=http://caddy:2019
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - railpack_cache:/cache/railpack
+      - ./sample-app:/workspace/sample-app:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - buildkit
+    restart: unless-stopped
+
+  buildkit:
+    image: moby/buildkit:latest
+    privileged: true
+    command: --addr tcp://0.0.0.0:1234
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:
+  railpack_cache:
