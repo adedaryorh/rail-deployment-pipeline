@@ -113,12 +113,14 @@ curl -s http://localhost:8080/api/deploys/<ID>/logs
 
 ## 🔍 Troubleshooting
 
-**Q: Build fails with "BUILDKIT_HOST" errors?**
-A: Ensure the `buildkit` container is running (`docker compose ps`). The `api` service is configured to talk to it over the internal Docker network.
+Are logs empty or disconnected?
 
-**Q: Cannot access http://localhost/app/?**
-A: Check the API logs (`docker compose logs -f api`). Ensure the health check passed. If the health check fails, Caddy won't be reloaded.
+A: The backend uses an in-memory ring buffer. If I restart the `api` container, previous logs are cleared. Ensure your browser supports Server-Sent Events.
 
-Logs are empty or disconnected?**
-A: The backend uses an in-memory ring buffer. If you restart the `api` container, previous logs are cleared. Ensure your browser supports Server-Sent Events.
+<img width="1634" height="825" alt="Screenshot 2026-04-26 at 18 08 02" src="https://github.com/user-attachments/assets/cc1cfd21-cb2c-445a-b7f3-07348799f869" />
+<img width="1627" height="455" alt="Screenshot 2026-04-26 at 18 08 25" src="https://github.com/user-attachments/assets/96d1e5e6-f795-4f08-adb5-8088fb88f3c2" />
+
+
+<img width="836" height="259" alt="Screenshot 2026-04-26 at 18 08 45" src="https://github.com/user-attachments/assets/448ccf1e-c1a0-44ce-857d-721c50c36d21" />
+<img width="845" height="740" alt="Screenshot 2026-04-26 at 18 08 36" src="https://github.com/user-attachments/assets/2fdccf77-2c56-4a8b-a11c-fc74a2e45f32" />
 
