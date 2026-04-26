@@ -59,7 +59,38 @@ Access the deployed sample app at:
 3. Click the **"Rollback"** button.
 4. The system will stop the current container and restart the previous image, updating Caddy back to the old version.
 
----
+### Service Lifecycle
+# Start all services in the background
+docker compose up -d
+
+# Stop all services
+docker compose down
+
+# Restart specific services
+docker compose restart caddy api
+
+# Start/Ensure specific services are running
+docker compose up -d buildkit api caddy
+
+
+### Building & Updating
+# Rebuild the API after code changes
+docker compose build api && docker compose up -d api
+
+# Rebuild everything without cache
+docker compose build --no-cache && docker compose up -d
+
+
+### Monitoring & Debugging
+# Check status of all containers
+docker compose ps
+
+# View logs for a specific service
+docker compose logs -f api
+
+# Fetch logs for a specific deployment via CLI (replace <ID>)
+curl -s http://localhost:8080/api/deploys/<ID>/logs
+
 
 ## 🛠 Architecture & Tech Stack
 
